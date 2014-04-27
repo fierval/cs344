@@ -45,30 +45,30 @@ int main(int argc, char **argv) {
   bool useEpsCheck = false;
   switch (argc)
   {
-	case 2:
-	  input_file = std::string(argv[1]);
-	  output_file = "HW2_output.png";
-	  reference_file = "HW2_reference.png";
-	  break;
-	case 3:
-	  input_file  = std::string(argv[1]);
+  case 2:
+    input_file = std::string(argv[1]);
+    output_file = "HW2_output.png";
+    reference_file = "HW2_reference.png";
+    break;
+  case 3:
+    input_file  = std::string(argv[1]);
       output_file = std::string(argv[2]);
-	  reference_file = "HW2_reference.png";
-	  break;
-	case 4:
-	  input_file  = std::string(argv[1]);
+    reference_file = "HW2_reference.png";
+    break;
+  case 4:
+    input_file  = std::string(argv[1]);
       output_file = std::string(argv[2]);
-	  reference_file = std::string(argv[3]);
-	  break;
-	case 6:
-	  useEpsCheck=true;
-	  input_file  = std::string(argv[1]);
-	  output_file = std::string(argv[2]);
-	  reference_file = std::string(argv[3]);
-	  perPixelError = atof(argv[4]);
+    reference_file = std::string(argv[3]);
+    break;
+  case 6:
+    useEpsCheck=true;
+    input_file  = std::string(argv[1]);
+    output_file = std::string(argv[2]);
+    reference_file = std::string(argv[3]);
+    perPixelError = atof(argv[4]);
       globalError   = atof(argv[5]);
-	  break;
-	default:
+    break;
+  default:
       std::cerr << "Usage: ./HW2 input_file [output_filename] [reference_filename] [perPixelError] [globalError]" << std::endl;
       exit(1);
   }

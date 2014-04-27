@@ -104,7 +104,7 @@ void preProcess(uchar4 **h_inputImageRGBA, uchar4 **h_outputImageRGBA,
 }
 
 void postProcess(const std::string& output_file, uchar4* data_ptr) {
-  cv::Mat output(numRows(), numCols(), CV_8UC4, (void*)data_ptr);
+  cv::Mat output(numRows(), numCols(), (int)CV_8UC4, (void*)data_ptr);
 
   cv::Mat imageOutputBGR;
   cv::cvtColor(output, imageOutputBGR, CV_RGBA2BGR);
@@ -124,9 +124,9 @@ void cleanUp(void)
 //    than the naive implementation in reference_calc.cpp.
 void generateReferenceImage(std::string input_file, std::string reference_file, int kernel_size)
 {
-	cv::Mat input = cv::imread(input_file);
-	// Create an identical image for the output as a placeholder
-	cv::Mat reference = cv::imread(input_file);
-	cv::GaussianBlur(input, reference, cv::Size2i(kernel_size, kernel_size),0);
-	cv::imwrite(reference_file, reference);
+  cv::Mat input = cv::imread(input_file);
+  // Create an identical image for the output as a placeholder
+  cv::Mat reference = cv::imread(input_file);
+  cv::GaussianBlur(input, reference, cv::Size2i(kernel_size, kernel_size),0);
+  cv::imwrite(reference_file, reference);
 }
