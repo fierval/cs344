@@ -2,6 +2,7 @@
 #include <string>
 #include "loadSaveImage.h"
 #include <thrust/extrema.h>
+#include "device_launch_parameters.h"
 
 //chroma-LogLuminance Space
 static float *d_x__;
