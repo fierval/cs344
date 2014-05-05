@@ -81,7 +81,6 @@
 
 #include "utils.h"
 #include "device_launch_parameters.h"
-//#include "sm_11_atomic_functions.h"
 #include "timer.h"
 #include <memory>
 
@@ -123,6 +122,28 @@ __global__ void extent(const float* const in, const size_t size, float* const ou
   }
 
 }
+
+__global__ void hist_prelim(const float* const in, const size_t size, const int nBins, const float lumMin, const float lumRange, int* const  outBins)
+{
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx >= size)
+  {
+    return;
+  }
+
+  extern __shared__ int tempBins[];
+  tempBins[threadIdx.x] = 0
+  __syncthreads();
+
+  int bin = (in[idx] - lumMin) / lumRange * nBins;
+  atomicAdd((tempBins + bin), 1);
+  __syncthreads();
+
+  int outBinIdx = nBins * blockIdx.x + bin;
+  outBins[outBinIdx] = tempBins[bin];
+}
+
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -209,10 +230,32 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   /*2) subtract them to find the range */
   float lumRange = max_logLum - min_logLum;
 
-    /*3) generate a histogram of all the values in the logLuminance channel using
-       the formula: bin = (lum[i] - lumMin) / lumRange * numBins
+  /*3) generate a histogram of all the values in the logLuminance channel using
+       the formula: bin = (lum[i] - lumMin) / lumRange * numBins */
+  int *d_bins;
+  std::unique_ptr<float> h_bins(new float[numBins]);
+  size_t numOutBins = gridSize.x * sizeof(int) * numBins;
+  int totalBins = gridSize.x * numBins;
 
-    4) Perform an exclusive scan (prefix sum) on the histogram to get
+  checkCudaErrors(cudaMalloc(&d_bins, numOutBins));
+  checkCudaErrors(cudaMemset(d_bins, 0, numOutBins));
+
+  hist_prelim<<<gridSize, blockSize, sizeof(int) * numBins>>>(d_logLuminance, size, numBins, min_logLum, lumRange, d_bins);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+  checkCudaErrors(cudaMemcpy(h_bins.get(), d_bins, numOutBins, cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaFree(d_bins));
+
+  //coalesce the histogram. Do it linearly - it's probably faster.
+  for(int i = 0; i < numBins; i++)
+  {
+    for(int j = 0; j < totalBins; j+=numBins)
+    {
+      h_bins.get()[i] += h_bins.get()[j + i];
+    }
+  }
+
+  /*4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       
   */
