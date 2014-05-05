@@ -78,11 +78,13 @@
   steps.
 
 */
-
 #include "utils.h"
 #include "device_launch_parameters.h"
 #include "timer.h"
+#include "device_functions.h"
 #include <memory>
+
+#pragma warning (disable: 4267)
 
 const int BLOCK_SIZE = 512;
 
@@ -92,7 +94,7 @@ __global__ void extent(const float* const in, const size_t size, float* const ou
 
   if (idx >= size)
   {
-    atomicAdd(sizeTracker, -1);
+    atomicAdd(sizeTracker, -1.0);
     return;
   }
 
@@ -132,16 +134,13 @@ __global__ void hist_prelim(const float* const in, const size_t size, const int 
     return;
   }
 
-  extern __shared__ int tempBins[];
-  tempBins[threadIdx.x] = 0
-  __syncthreads();
+  //tempBins[threadIdx.x] = 0;
+  //__syncthreads();
 
   int bin = (in[idx] - lumMin) / lumRange * nBins;
-  atomicAdd((tempBins + bin), 1);
-  __syncthreads();
-
   int outBinIdx = nBins * blockIdx.x + bin;
-  outBins[outBinIdx] = tempBins[bin];
+
+  atomicAdd(&outBins[outBinIdx], 1);
 }
 
 
@@ -240,7 +239,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   checkCudaErrors(cudaMalloc(&d_bins, numOutBins));
   checkCudaErrors(cudaMemset(d_bins, 0, numOutBins));
 
-  hist_prelim<<<gridSize, blockSize, sizeof(int) * numBins>>>(d_logLuminance, size, numBins, min_logLum, lumRange, d_bins);
+  hist_prelim<<<gridSize, blockSize>>>(d_logLuminance, size, numBins, min_logLum, lumRange, d_bins);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   checkCudaErrors(cudaMemcpy(h_bins.get(), d_bins, numOutBins, cudaMemcpyDeviceToHost));

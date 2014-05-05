@@ -4,6 +4,7 @@
 #include <thrust/extrema.h>
 #include "device_launch_parameters.h"
 
+#pragma warning (disable: 4267)
 //chroma-LogLuminance Space
 static float *d_x__;
 static float *d_y__;
