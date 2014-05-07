@@ -134,15 +134,12 @@ __global__ void hist_prelim(const float* const in, const size_t size, const int 
     return;
   }
 
-  //tempBins[threadIdx.x] = 0;
-  //__syncthreads();
-
   int bin = (in[idx] - lumMin) / lumRange * nBins;
-  int outBinIdx = nBins * blockIdx.x + bin;
+  if (bin > nBins - 1)
+    bin = nBins - 1;
 
-  atomicAdd(&outBins[outBinIdx], 1);
+  atomicAdd(&outBins[bin], 1);
 }
-
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -219,9 +216,9 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     seq_max = std::max(seq_max, *(h_in + i));
   }
 
-  duration =  ( std::clock() - start ) / (double) CLOCKS_PER_SEC;
+  duration =  ( std::clock() - start ) / (double) CLOCKS_PER_SEC * 1000.;
 
-  printf("CUDA min\\max: %f, %f, elapsed: %lf\n", min_logLum, max_logLum, timer.Elapsed() / 1000.);
+  printf("CUDA min\\max: %f, %f, elapsed: %lf\n", min_logLum, max_logLum, timer.Elapsed());
   printf("Seq min\\max: %f, %f, elapsed: %lf\n", seq_min, seq_max, duration);
   free(h_in);
 #endif
@@ -231,29 +228,50 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
   /*3) generate a histogram of all the values in the logLuminance channel using
        the formula: bin = (lum[i] - lumMin) / lumRange * numBins */
-  int *d_bins;
-  std::unique_ptr<float> h_bins(new float[numBins]);
-  size_t numOutBins = gridSize.x * sizeof(int) * numBins;
-  int totalBins = gridSize.x * numBins;
+#ifdef _DEBUG
+  timer.Start();
+#endif
 
-  checkCudaErrors(cudaMalloc(&d_bins, numOutBins));
-  checkCudaErrors(cudaMemset(d_bins, 0, numOutBins));
+
+  int *d_bins;
+  std::unique_ptr<int> hist(new int[numBins]);
+
+  checkCudaErrors(cudaMalloc(&d_bins, sizeof(int) * numBins));
+  checkCudaErrors(cudaMemset(d_bins, 0, sizeof(int) * numBins));
 
   hist_prelim<<<gridSize, blockSize>>>(d_logLuminance, size, numBins, min_logLum, lumRange, d_bins);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-  checkCudaErrors(cudaMemcpy(h_bins.get(), d_bins, numOutBins, cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaMemcpy(hist.get(), d_bins, sizeof(int) * numBins, cudaMemcpyDeviceToHost));
   checkCudaErrors(cudaFree(d_bins));
 
-  //coalesce the histogram. Do it linearly - it's probably faster.
-  for(int i = 0; i < numBins; i++)
-  {
-    for(int j = 0; j < totalBins; j+=numBins)
-    {
-      h_bins.get()[i] += h_bins.get()[j + i];
-    }
+#ifdef _DEBUG
+  timer.Stop();
+
+  h_in = (float *) malloc(size * sizeof(float));
+  start = std::clock();
+
+  checkCudaErrors(cudaMemcpy(h_in, d_logLuminance, size * sizeof(float), cudaMemcpyDeviceToHost));
+
+  unsigned int *histo = new unsigned int[numBins];
+
+  for (size_t i = 0; i < numBins; ++i) histo[i] = 0;
+
+  for (size_t i = 0; i < numCols * numRows; ++i) {
+    unsigned int bin = std::min(static_cast<unsigned int>(numBins - 1),
+                           static_cast<unsigned int>((h_in[i] - min_logLum) / lumRange * numBins));
+    histo[bin]++;
   }
 
+  duration =  ( std::clock() - start ) / (double) CLOCKS_PER_SEC * 1000;
+
+  printf("CUDA hist: %d, %d %d, elapsed: %lf\n", hist.get()[0], hist.get()[1], hist.get()[numBins - 1], timer.Elapsed());
+  printf("Seq hist: %d, %d %d, elapsed: %lf\n", histo[0], histo[1], histo[numBins - 1], seq_max, duration);
+
+  delete[] histo;
+  free(h_in);
+
+#endif
   /*4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       
