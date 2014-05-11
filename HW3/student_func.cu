@@ -101,26 +101,27 @@ __global__ void extent(const float* const in, const size_t size, float* const ou
   for(int step = 1; step < size; step <<= 1)
   {
     __syncthreads();
+    float tMin = tempIn[threadIdx.x];
+    float tMax = tempInMax[threadIdx.x];
+
     if (threadIdx.x >= step)
     {
-      float tMin = tempIn[threadIdx.x] < tempIn[threadIdx.x - step] ? tempIn[threadIdx.x] : tempIn[threadIdx.x - step];
-      float tMax = tempInMax[threadIdx.x] > tempInMax[threadIdx.x - step] ? tempInMax[threadIdx.x] : tempInMax[threadIdx.x - step];  
-
-      __syncthreads();
-
-      tempInMax[threadIdx.x] = tMax;
-      tempIn[threadIdx.x] = tMin;
+      tMin = min(tMin, tempIn[threadIdx.x - step]);
+      tMax = max(tMax, tempInMax[threadIdx.x - step]);
     }
+  
+    tempInMax[threadIdx.x] = tMax;
+    tempIn[threadIdx.x] = tMin;
+
   }
 
+  __syncthreads();
 
   // last thread writes out the result
-  if (threadIdx.x == size - 1)
+  if (threadIdx.x == 0)
   {
-    __syncthreads();
-
-    outMin[blockIdx.x] = tempIn[threadIdx.x];
-    outMax[blockIdx.x] = tempInMax[threadIdx.x];
+    outMin[blockIdx.x] = tempIn[size - 1];
+    outMax[blockIdx.x] = tempInMax[size - 1];
   }
 
 }
@@ -132,25 +133,31 @@ __global__ void scan_sum_exclusive(const int * const in, const size_t size, unsi
   extern __shared__ int tempIn[];
 
   tempIn[threadIdx.x] = threadIdx.x > 0 ? in[idx - 1] : 0;
+  __syncthreads();
 
   for(int step = 1; step < size; step <<= 1)
   {
     __syncthreads();
+    int tSum = tempIn[threadIdx.x];
+
     if(threadIdx.x >= step)
     {
-      int tSum = tempIn[threadIdx.x] + tempIn[threadIdx.x - step];
-      __syncthreads();
-      tempIn[threadIdx.x] = tSum;
+      tSum += tempIn[threadIdx.x - step];
     }
+    __syncthreads();
+    tempIn[threadIdx.x] = tSum;
+    
   }
 
   __syncthreads();
   out[idx] = tempIn[threadIdx.x];
   
   __syncthreads();
+
+  int last = blockDim.x * blockIdx.x + size - 1;
+
   if(threadIdx.x == 0)
   {
-    int last = blockDim.x * blockIdx.x + size - 1;
     sums[blockIdx.x] = out[last] + in[last];
   }
 }
@@ -309,11 +316,16 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
   duration =  ( std::clock() - start ) / (double) CLOCKS_PER_SEC * 1000;
 
-  printf("CUDA hist: %d, %d %d, elapsed: %lf\n", hist.get()[0], hist.get()[1], hist.get()[numBins - 1], timer.Elapsed());
-  printf("Seq hist: %d, %d %d, elapsed: %lf\n", histo[0], histo[1], histo[numBins - 1], seq_max, duration);
+  printf("CUDA hist: %d, %d %d, elapsed: %lf\n", hist.get()[0], hist.get()[10], hist.get()[numBins - 1], timer.Elapsed());
+  printf("Seq hist: %d, %d %d, elapsed: %lf\n", histo[0], histo[10], histo[numBins - 1], seq_max, duration);
 
-  delete[] histo;
-  free(h_in);
+  for(int i = 0; i < numBins; i++)
+  {
+    if(hist.get()[i] != histo[i])
+    {
+      printf("%d\n", i);
+    }
+  }
 
 #endif
   /*4) Perform an exclusive scan (prefix sum) on the histogram to get
@@ -321,8 +333,8 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        incoming d_cdf pointer which already has been allocated for you)       
   */
     
-    gridSize.x = ((int)numBins / BLOCK_SIZE);
-    const int remaining = (int)numBins % BLOCK_SIZE;
+    gridSize.x = ((int)numBins / blockSize.x);
+    const int remaining = (int)numBins % blockSize.x;
 
     std::unique_ptr<int> scanned(new int[numBins]);
 
@@ -349,21 +361,39 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
       std::unique_ptr<int> sums(new int[gridSize.x + 1]);
       checkCudaErrors(cudaMemcpy(sums.get(), d_sums, (gridSize.x + 1) * sizeof(int), cudaMemcpyDeviceToHost));
 
-      for(unsigned int i = 1; i < gridSize.x + 1; i++)
+      int sizeAdd = remaining > 0 ? 1 : 0;
+
+      for(unsigned int i = 1; i < gridSize.x + sizeAdd; i++)
       {
         sums.get()[i] += sums.get()[i - 1];
       }
 
-      int sizeAdd = remaining > 0 ? 1 : 0;
-      
       checkCudaErrors(cudaMemcpy(d_sums, sums.get(), (gridSize.x + 1) * sizeof(int), cudaMemcpyHostToDevice));
 
       addSums<<<gridSize.x + sizeAdd, blockSize>>>(d_cdf, d_sums);
       cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
     }
 
-    checkCudaErrors(cudaMemcpy(scanned.get(), d_cdf, numBins * sizeof(int), cudaMemcpyDeviceToHost));
-
     checkCudaErrors(cudaFree(d_bins));
     checkCudaErrors(cudaFree(d_sums));
+  
+  //Step 4
+  //finally we perform and exclusive scan (prefix sum)
+  //on the histogram to get the cumulative distribution
+#ifdef _DEBUG
+  checkCudaErrors(cudaMemcpy(scanned.get(), d_cdf, numBins * sizeof(int), cudaMemcpyDeviceToHost));
+
+  std::unique_ptr<int> h_cdf(new int [numBins]);
+  memset(h_cdf.get(), 0, numBins * sizeof(int));
+
+  for (size_t i = 1; i < numBins; ++i) {
+    h_cdf.get()[i] = h_cdf.get()[i - 1] + histo[i - 1];
+  }
+
+  printf("CUDA cdf: %d, %d %d\n", scanned.get()[10], scanned.get()[25], scanned.get()[numBins - 1]);
+  printf("Seq cdf: %d, %d %d\n", h_cdf.get()[10], h_cdf.get()[25], h_cdf.get()[numBins - 1]);
+
+  delete[] histo;
+  free(h_in);
+#endif
 }
