@@ -88,41 +88,82 @@
 
 const int BLOCK_SIZE = 512;
 
-__global__ void extent(const float* const in, const size_t size, float* const outMin, float * const outMax, int * const sizeTracker)
+__global__ void extent(const float* const in, const size_t size, float* const outMin, float * const outMax)
 {
   int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  if (idx >= size)
-  {
-    atomicAdd(sizeTracker, -1.0);
-    return;
-  }
 
   __shared__ float tempIn[BLOCK_SIZE];
   __shared__ float tempInMax[BLOCK_SIZE];
 
   tempIn[threadIdx.x] = in[idx];
   tempInMax[threadIdx.x] = tempIn[threadIdx.x];
-  __syncthreads();
 
-  for(int step = 1; step < *sizeTracker; step <<= 1)
+  for(int step = 1; step < size; step <<= 1)
   {
+    __syncthreads();
     if (threadIdx.x >= step)
     {
-      tempIn[threadIdx.x] = min(tempIn[threadIdx.x], tempIn[threadIdx.x - step]);
-      tempInMax[threadIdx.x] = max(tempInMax[threadIdx.x], tempInMax[threadIdx.x - step]);  
+      float tMin = tempIn[threadIdx.x] < tempIn[threadIdx.x - step] ? tempIn[threadIdx.x] : tempIn[threadIdx.x - step];
+      float tMax = tempInMax[threadIdx.x] > tempInMax[threadIdx.x - step] ? tempInMax[threadIdx.x] : tempInMax[threadIdx.x - step];  
+
+      __syncthreads();
+
+      tempInMax[threadIdx.x] = tMax;
+      tempIn[threadIdx.x] = tMin;
     }
   }
 
-  __syncthreads();
 
   // last thread writes out the result
-  if (threadIdx.x == *sizeTracker - 1)
+  if (threadIdx.x == size - 1)
   {
+    __syncthreads();
+
     outMin[blockIdx.x] = tempIn[threadIdx.x];
     outMax[blockIdx.x] = tempInMax[threadIdx.x];
   }
 
+}
+
+__global__ void scan_sum_exclusive(const int * const in, const size_t size, unsigned int * const out, int * const sums)
+{
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  extern __shared__ int tempIn[];
+
+  tempIn[threadIdx.x] = threadIdx.x > 0 ? in[idx - 1] : 0;
+
+  for(int step = 1; step < size; step <<= 1)
+  {
+    __syncthreads();
+    if(threadIdx.x >= step)
+    {
+      int tSum = tempIn[threadIdx.x] + tempIn[threadIdx.x - step];
+      __syncthreads();
+      tempIn[threadIdx.x] = tSum;
+    }
+  }
+
+  __syncthreads();
+  out[idx] = tempIn[threadIdx.x];
+  
+  __syncthreads();
+  if(threadIdx.x == 0)
+  {
+    int last = blockDim.x * blockIdx.x + size - 1;
+    sums[blockIdx.x] = out[last] + in[last];
+  }
+}
+
+__global__ void addSums(unsigned int * const inOut, int * const vals)
+{
+  if(blockIdx.x == 0)
+  {
+    return;
+  }
+
+  int idx = blockDim.x * blockIdx.x + threadIdx.x;
+  inOut[idx] += vals[blockIdx.x - 1];
 }
 
 __global__ void hist_prelim(const float* const in, const size_t size, const int nBins, const float lumMin, const float lumRange, int* const  outBins)
@@ -156,14 +197,15 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
 
   const size_t size = numCols * numRows;
-  const dim3 blockSize(BLOCK_SIZE);
-  const dim3 gridSize((size + BLOCK_SIZE) / BLOCK_SIZE);
+  dim3 blockSize(BLOCK_SIZE);
+  dim3 gridSize(size / BLOCK_SIZE);
+
+  int remainder = size % BLOCK_SIZE;
 
   std::unique_ptr<float> h_minOut(new float[gridSize.x]);
   std::unique_ptr<float> h_maxOut(new float[gridSize.x]);
 
   float * d_minOut, *d_maxOut;
-  int *d_sizeTracker;
   min_logLum = FLT_MAX;
   max_logLum = 0;
 
@@ -175,10 +217,14 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
   checkCudaErrors(cudaMalloc(&d_minOut, sizeof(float) * gridSize.x));
   checkCudaErrors(cudaMalloc(&d_maxOut, sizeof(float) * gridSize.x));
-  checkCudaErrors(cudaMalloc(&d_sizeTracker, sizeof(int)));
-  checkCudaErrors(cudaMemcpy(d_sizeTracker, &BLOCK_SIZE, sizeof(int), cudaMemcpyHostToDevice));
 
-  extent<<<gridSize, blockSize>>>(d_logLuminance, size, d_minOut, d_maxOut, d_sizeTracker);
+  extent<<<gridSize, blockSize>>>(d_logLuminance, BLOCK_SIZE, d_minOut, d_maxOut);
+
+  if(remainder > 0)
+  {
+    extent<<<1, remainder>>>(&d_logLuminance[gridSize.x * blockSize.x], remainder, &d_minOut[gridSize.x], &d_maxOut[gridSize.x]);
+  }
+
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   checkCudaErrors(cudaMemcpy(h_minOut.get(), d_minOut, gridSize.x * sizeof(float), cudaMemcpyDeviceToHost));
@@ -193,7 +239,6 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
 
   checkCudaErrors(cudaFree(d_maxOut));
   checkCudaErrors(cudaFree(d_minOut));
-  checkCudaErrors(cudaFree(d_sizeTracker));
 
 #ifdef _DEBUG
   timer.Stop();
@@ -207,7 +252,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   double duration;
   start = std::clock();
 
-  float seq_min = FLT_MAX, seq_max = 0;
+  float seq_min = std::numeric_limits<float>::max(), seq_max = -std::numeric_limits<float>::max();
   checkCudaErrors(cudaMemcpy(h_in, d_logLuminance, size * sizeof(float), cudaMemcpyDeviceToHost));
 
   for (int i = 0; i < size; i++)
@@ -243,7 +288,6 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   checkCudaErrors(cudaMemcpy(hist.get(), d_bins, sizeof(int) * numBins, cudaMemcpyDeviceToHost));
-  checkCudaErrors(cudaFree(d_bins));
 
 #ifdef _DEBUG
   timer.Stop();
@@ -276,4 +320,50 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       
   */
+    
+    gridSize.x = ((int)numBins / BLOCK_SIZE);
+    const int remaining = (int)numBins % BLOCK_SIZE;
+
+    std::unique_ptr<int> scanned(new int[numBins]);
+
+    int *d_sums;
+
+    checkCudaErrors(cudaMalloc(&d_sums, sizeof(int) * (gridSize.x + 1)));
+
+    // compute main scan
+    if (gridSize.x > 0)
+    {
+      scan_sum_exclusive<<<gridSize, blockSize, blockSize.x * sizeof(int)>>>(d_bins, blockSize.x, d_cdf, d_sums);
+    }
+      
+    // launch one more block of the "remainder" elements
+    if(remaining > 0)
+    {
+      scan_sum_exclusive<<<1, remaining, remaining * sizeof(int)>>>(&d_bins[gridSize.x * blockSize.x], remaining, &d_cdf[gridSize.x * blockSize.x], &d_sums[gridSize.x]);
+    }
+
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    if (gridSize.x > 0)
+    {
+      std::unique_ptr<int> sums(new int[gridSize.x + 1]);
+      checkCudaErrors(cudaMemcpy(sums.get(), d_sums, (gridSize.x + 1) * sizeof(int), cudaMemcpyDeviceToHost));
+
+      for(unsigned int i = 1; i < gridSize.x + 1; i++)
+      {
+        sums.get()[i] += sums.get()[i - 1];
+      }
+
+      int sizeAdd = remaining > 0 ? 1 : 0;
+      
+      checkCudaErrors(cudaMemcpy(d_sums, sums.get(), (gridSize.x + 1) * sizeof(int), cudaMemcpyHostToDevice));
+
+      addSums<<<gridSize.x + sizeAdd, blockSize>>>(d_cdf, d_sums);
+      cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    }
+
+    checkCudaErrors(cudaMemcpy(scanned.get(), d_cdf, numBins * sizeof(int), cudaMemcpyDeviceToHost));
+
+    checkCudaErrors(cudaFree(d_bins));
+    checkCudaErrors(cudaFree(d_sums));
 }
