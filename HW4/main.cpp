@@ -17,7 +17,7 @@ void preProcess(unsigned int **inputVals,
                 unsigned int **outputPos,
                 size_t &numElems,
                 const std::string& filename,
-				const std::string& template_file);
+        const std::string& template_file);
 
 void postProcess(const unsigned int* const outputVals,
                  const unsigned int* const outputPos,
@@ -48,17 +48,17 @@ int main(int argc, char **argv) {
 
   switch (argc)
   {
-	case 3:
-	  input_file  = std::string(argv[1]);
+  case 3:
+    input_file  = std::string(argv[1]);
       template_file = std::string(argv[2]);
-	  output_file = "HW4_output.png";
-	  break;
-	case 4:
-	  input_file  = std::string(argv[1]);
+    output_file = "HW4_output.png";
+    break;
+  case 4:
+    input_file  = std::string(argv[1]);
       template_file = std::string(argv[2]);
-	  output_file = std::string(argv[3]);
-	  break;
-	default:
+    output_file = std::string(argv[3]);
+    break;
+  default:
           std::cerr << "Usage: ./HW4 input_file template_file [output_filename]" << std::endl;
           exit(1);
   }
@@ -112,8 +112,8 @@ int main(int argc, char **argv) {
   thrust::host_vector<unsigned int> h_outputPos(numElems);
 
   reference_calculation(&h_inputVals[0], &h_inputPos[0],
-						&h_outputVals[0], &h_outputPos[0],
-						numElems);
+            &h_outputVals[0], &h_outputPos[0],
+            numElems);
 
   //postProcess(valsPtr, posPtr, numElems, reference_file);
 

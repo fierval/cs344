@@ -16,6 +16,8 @@
 #include "loadSaveImage.h"
 #include <stdio.h>
 
+#pragma warning (disable: 4244)
+
 //simple cross correlation kernel copied from Mike's IPython Notebook
 __global__ void naive_normalized_cross_correlation(
     float*         d_response,
@@ -196,7 +198,7 @@ void preProcess(unsigned int **inputVals,
                 unsigned int **outputPos,
                 size_t &numElem,
                 const std::string& filename,
-				const std::string& templateFilename) {
+        const std::string& templateFilename) {
   //make sure the context initializes ok
   checkCudaErrors(cudaFree(0));
 

@@ -4,6 +4,8 @@
 #include <vector>
 #include "cuda_runtime.h"
 
+#pragma warning (disable: 4267)
+
 //The caller becomes responsible for the returned pointer. This
 //is done in the interest of keeping this code as simple as possible.
 //In production code this is a bad idea - we should use RAII
